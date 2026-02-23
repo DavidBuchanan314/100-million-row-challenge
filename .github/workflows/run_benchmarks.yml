@@ -93,6 +93,7 @@ jobs:
             php8.5 /usr/local/bin/composer install --no-dev
   
             php8.5 tempest data:parse --inputPath="~/benchmark/data/real-data.csv" --outputPath="~/benchmark/data/real-data.json" --store
+            php8.5 tempest data:validate --inputPath="~/benchmark/data/real-data.csv" --outputPath="~/benchmark/data/real-data.json" --store
             
             ENTRY=\$(tail -n 1 leaderboard.csv)
 
