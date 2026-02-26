@@ -9,7 +9,6 @@ final class Parser
     public function parse(string $inputPath, string $outputPath): void
     {
         $file = new \SplFileObject($inputPath, 'r');
-        //$file->setFlags(\SplFileObject::READ_AHEAD);
         $block = '';
         $lines_read = 0;
         for (;;) {
@@ -23,7 +22,7 @@ final class Parser
             while ($idx < $blen) {
                 $comma = strpos($block, ',', $idx + 25);
                 $path = substr($block, $idx + 25, ($comma - $idx) - 25);
-                $date = substr($block, $comma + 1, 10);
+                $date = substr($block, $comma + 3, 10);
                 //print($path."\n");
                 //print($date."\n");
                 $idx = $comma + 27;
