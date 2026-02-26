@@ -361,7 +361,7 @@ final class BenchmarkRunCommand
         $handle = fopen($path, 'r');
         $data = [];
 
-        while ($line = fgetcsv($handle, escape: ',')) {
+        while ($line = fgetcsv($handle, escape: '\\')) {
             if ($line[0] === 'entry_date') {
                 continue;
             }
@@ -390,6 +390,8 @@ final class BenchmarkRunCommand
                 ];
             }
         }
+
+        fclose($handle);
 
         usort($data, fn ($a, $b) => $a['benchmarkTime'] <=> $b['benchmarkTime']);
 
