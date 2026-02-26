@@ -103,17 +103,6 @@ final class Parser
             }
         }
 
-        // Create merged matrix
-        $matrix = new \SplFixedArray(self::MATRIX_SIZE);
-        for ($i = 0; $i < self::MATRIX_SIZE; $i++) {
-            $matrix[$i] = 0;
-        }
-
-        // Merge first matrix
-        for ($i = 0; $i < self::MATRIX_SIZE; $i++) {
-            $matrix[$i] += $matrix1[$i];
-        }
-
         // Merge second matrix with index remapping
         $pathRemap = [];
         foreach ($pathIndices2 as $path => $oldIdx) {
@@ -138,7 +127,7 @@ final class Parser
 
                 $val = $matrix2[$baseOffsetOld + $oldDateIdx];
                 if ($val > 0) {
-                    $matrix[$baseOffsetNew + $newDateIdx] += $val;
+                    $matrix1[$baseOffsetNew + $newDateIdx] += $val;
                 }
             }
         }
@@ -175,7 +164,7 @@ final class Parser
 
                 foreach ($sortedDates as $date) {
                     $dateIdx = $dateIndices[$date];
-                    $count = $matrix[$baseOffset + $dateIdx];
+                    $count = $matrix1[$baseOffset + $dateIdx];
 
                     if ($count > 0) {
                         $dateEntries[] = '        "' . $date . '": ' . $count;
@@ -211,6 +200,8 @@ final class Parser
 
         $pathIndices = [];
         $dateIndices = [];
+        $pathcIndices = [];
+        $datecIndices = [];
         $nextPathIdx = 0;
         $nextDateIdx = 0;
 
@@ -229,7 +220,7 @@ final class Parser
             $chunk = fread($handle, $chunkSize);
             //if ($chunk === false) break;
 
-            $bytesRead += strlen($chunk);
+            $bytesRead += $chunkSize;
             $buffer = $remaining . $chunk;
             $lastNewline = strrpos($buffer, "\n");
 
@@ -248,17 +239,21 @@ final class Parser
                 if ($commaPos === false) continue;
 
                 $path = substr($line, 19, $commaPos - 19);
+                $pathc = crc32($path);
                 $date = substr($line, $commaPos + 1, 10);
+                $datec = crc32($date);
 
-                if (!isset($pathIndices[$path])) {
-                    $pathIndices[$path] = $nextPathIdx++;
+                if (!isset($pathcIndices[$pathc])) {
+                    $pathIndices[$path] = $nextPathIdx;
+                    $pathcIndices[$pathc] = $nextPathIdx++;
                 }
 
-                if (!isset($dateIndices[$date])) {
-                    $dateIndices[$date] = $nextDateIdx++;
+                if (!isset($datecIndices[$datec])) {
+                    $dateIndices[$date] = $nextDateIdx;
+                    $datecIndices[$datec] = $nextDateIdx++;
                 }
 
-                $offset = $pathIndices[$path] * self::TIMESTAMP_COUNT + $dateIndices[$date];
+                $offset = $pathcIndices[$pathc] * self::TIMESTAMP_COUNT + $datecIndices[$datec];
                 $matrix[$offset]++;
             }
         }
@@ -268,17 +263,21 @@ final class Parser
             $commaPos = strpos($remaining, ',', 19);
             if ($commaPos !== false) {
                 $path = substr($remaining, 19, $commaPos - 19);
+                $pathc = crc32($path);
                 $date = substr($remaining, $commaPos + 1, 10);
+                $datec = crc32($date);
 
-                if (!isset($pathIndices[$path])) {
-                    $pathIndices[$path] = $nextPathIdx++;
+                if (!isset($pathcIndices[$pathc])) {
+                    $pathIndices[$path] = $nextPathIdx;
+                    $pathcIndices[$pathc] = $nextPathIdx++;
                 }
 
-                if (!isset($dateIndices[$date])) {
-                    $dateIndices[$date] = $nextDateIdx++;
+                if (!isset($datecIndices[$datec])) {
+                    $dateIndices[$date] = $nextDateIdx;
+                    $datecIndices[$datec] = $nextDateIdx++;
                 }
 
-                $$offset = $pathIndices[$path] * self::TIMESTAMP_COUNT + $dateIndices[$date];
+                $$offset = $pathcIndices[$pathc] * self::TIMESTAMP_COUNT + $datecIndices[$datec];
                 $matrix[$offset]++;
             }
         }
