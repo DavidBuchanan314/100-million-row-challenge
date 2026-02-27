@@ -64,15 +64,8 @@ final class Parser
                     $map[$path] = array_fill(0, self::NUM_DATES, 0);
                 }
                 $map[$path][$date]++;
-                //$foo = $path*2232+$date;
-                //$array[$foo] = $array[$foo] + 1;
-
-                //print($date."\n");
-                //print($path."\n");
-                //print($date."\n");
                 $idx = $comma + 27;
                 //$lines_read++;
-                //print($idx."\n");
             }
             $block = substr($block, $idx); // remainder
             //print($lines_read."\n");
