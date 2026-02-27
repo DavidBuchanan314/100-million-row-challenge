@@ -11,7 +11,7 @@ final class Parser
     private const THREAD_COUNT = 8;
     private const SHM_SIZE = 10000000;
     private const READ_CHUNK_SZ = 0x10000;
-    private const NUM_DATES = 2232;
+    private const NUM_DATES = 2604;
 
     private function findSplitPoints(string $inputPath): array
     {
@@ -84,7 +84,7 @@ final class Parser
     public function parse(string $inputPath, string $outputPath): void
     {
         $datelut = [];
-        for ($y = 1; $y <= 6; $y++) {
+        for ($y = 0; $y <= 6; $y++) {
             for ($mm = 1; $mm <= 12; $mm++) {
                 for ($dd = 1; $dd <= 31; $dd++) {
                     $datelut[] = sprintf('%d-%02d-%02d', $y, $mm, $dd);
