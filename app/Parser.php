@@ -9,7 +9,6 @@ use Exception;
 final class Parser
 {
     private const THREAD_COUNT = 8;
-    private const SHM_SIZE = 10000000;
     private const READ_CHUNK_SZ = 0x10000;
     private const NUM_DATES = 2604;
 
@@ -28,7 +27,7 @@ final class Parser
         return $res;
     }
 
-    private function parseRange(string $inputPath, int $start, int $end, array $datelutlut, int $tid): void
+    private function parseRange(string $inputPath, int $start, int $end, array $datelutlut, int $tid, $sock): void
     {
         $map = [];
         $file = fopen($inputPath, 'rb');
@@ -74,9 +73,17 @@ final class Parser
 
         //print("done reading (thread $tid)\n");
 
-        $shm = shm_attach(ftok(__FILE__, chr(65+$tid)), self::SHM_SIZE, 0666);
-        shm_put_var($shm, 0, $map);
-        shm_detach($shm);
+        $data = igbinary_serialize($map);
+        $len = strlen($data);
+        $header = pack('V', $len);
+        fwrite($sock, $header);
+        $written = 0;
+        while ($written < $len) {
+            $w = fwrite($sock, substr($data, $written, 65536));
+            $written += $w;
+        }
+        fclose($sock);
+        //print(strlen(serialize($map))."\n");
         //print("hello\n");
         //return $map;
     }
@@ -99,35 +106,42 @@ final class Parser
 
         // spin up threads
         $pids = [];
+        $sockets = [];
         for ($i=0; $i<self::THREAD_COUNT; $i++) {
+            $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
             $pid = pcntl_fork();
             if ($pid == -1) {
                 throw new \RuntimeException("Could not fork process");
             } elseif ($pid == 0) {
-                $this->parseRange($inputPath, $splitpoints[$i], $splitpoints[$i+1], $datelutlut, $i);
+                fclose($pair[0]);
+                $this->parseRange($inputPath, $splitpoints[$i], $splitpoints[$i+1], $datelutlut, $i, $pair[1]);
                 exit(0);
             }
             $pids[] = $pid;
-        }
-
-        // open these in advance while the workers are doing their thang
-        $shms = [];
-        for ($i=0; $i<self::THREAD_COUNT; $i++) {
-            $shms[] = shm_attach(ftok(__FILE__, chr(65+$i)), self::SHM_SIZE, 0666);
+            fclose($pair[1]);
+            $sockets[] = $pair[0];
         }
 
         // join the threads, collect results
+        // NOTE: must read from socket BEFORE waitpid, otherwise deadlock
+        // if child's data exceeds socket buffer and blocks on fwrite
         $maps = [];
         $slugs = []; // all slugs, in first-seen order
         $seenSlugs = [];
         foreach ($pids as $tid=>$pid) {
+            //print("getting $tid\n");
+            $header = fread($sockets[$tid], 4);
+            $len = unpack('V', $header)[1];
+            $data = '';
+            while (strlen($data) < $len) {
+                $data .= fread($sockets[$tid], $len - strlen($data));
+            }
+            fclose($sockets[$tid]);
+            $map = igbinary_unserialize($data);
             pcntl_waitpid($pid, $status);
             if ($status !== 0) {
                 throw new \RuntimeException("child exited with nonzero status");
             }
-            //print("getting $tid\n");
-            $map = shm_get_var($shms[$tid], 0);
-            shm_detach($shms[$tid]);
             foreach($map as $key=>$_) {
                 if (!isset($seenSlugs[$key])) {
                     $seenSlugs[$key] = true;
@@ -139,7 +153,7 @@ final class Parser
 
         $outHandle = fopen($outputPath, 'wb');
         fwrite($outHandle, "{\n");
-        $zeroes = array_fill(0, self::NUM_DATES, 0);
+        //$zeroes = array_fill(0, self::NUM_DATES, 0);
         foreach ($slugs as $slug) {
             $counts = $maps[0][$slug] ?? array_fill(0, self::NUM_DATES, 0);
             for ($i=1; $i<self::THREAD_COUNT; $i++) {
