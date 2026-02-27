@@ -24,15 +24,11 @@ final class Parser
 
         $map = [];
         $file = fopen($inputPath, 'r');
-        $block = '';
         $lines_read = 0;
         for (;;) {
-            $block .= fread($file, 0x10000);
-            $blen = strlen($block) - 200; // 200 >= max line length, stop early to avoid starting to parse a line that straddles the boundary
-            if ($blen <= 0) {
-                $blen += 200; // we're on the last block, no early-stop needed
-                if ($blen == 0) break; // eof
-            };
+            $block = fread($file, 0x10000).fgets($file);
+            $blen = strlen($block);
+            if ($blen == 0) break; // eof
             $idx = 0;
             while ($idx < $blen) {
                 $comma = strpos($block, ',', $idx + 25);
@@ -57,11 +53,11 @@ final class Parser
                 $lines_read++;
                 //print($idx."\n");
             }
-            $block = substr($block, $idx); // remainder
             //print($lines_read."\n");
         }
 
         print("read $lines_read lines\n");
+        return;
 
         $outHandle = fopen($outputPath, 'wb');
         fwrite($outHandle, "{\n");
