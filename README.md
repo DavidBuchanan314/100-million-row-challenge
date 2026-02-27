@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> - The 100-million-row challenge is now **live**. You have until March 15, 11:59PM CET to submit your entry. 
+> - The challenge is live; you have until March 15, 11:59PM CET to submit your entry. 
 > - Check out [leaderboard.csv](./leaderboard.csv) for actual results. 
 > - Comment on your PR with `/bench` to request a re-run.
 > - [Join our Discord](https://discord.com/channels/1236153076688359495/1476516330017394829) to discuss the challenge with other participants.
