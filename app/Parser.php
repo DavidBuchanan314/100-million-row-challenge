@@ -72,12 +72,12 @@ final class Parser
         }
         fclose($file);
 
-        print("done reading (thread $tid)\n");
+        //print("done reading (thread $tid)\n");
 
-        $shm = shm_attach(ftok(__FILE__, "$tid"), self::SHM_SIZE, 0666);
+        $shm = shm_attach(ftok(__FILE__, chr(65+$tid)), self::SHM_SIZE, 0666);
         shm_put_var($shm, 0, $map);
         shm_detach($shm);
-        print("hello\n");
+        //print("hello\n");
         //return $map;
     }
 
@@ -93,7 +93,7 @@ final class Parser
         }
         $datelutlut = array_flip($datelut);
 
-        print("done building date table\n");
+        //print("done building date table\n");
 
         $splitpoints = $this->findSplitPoints($inputPath);
 
@@ -110,6 +110,12 @@ final class Parser
             $pids[] = $pid;
         }
 
+        // open these in advance while the workers are doing their thang
+        $shms = [];
+        for ($i=0; $i<self::THREAD_COUNT; $i++) {
+            $shms[] = shm_attach(ftok(__FILE__, chr(65+$i)), self::SHM_SIZE, 0666);
+        }
+
         // join the threads, collect results
         $maps = [];
         $slugs = []; // all slugs, in first-seen order
@@ -119,10 +125,9 @@ final class Parser
             if ($status !== 0) {
                 throw new \RuntimeException("child exited with nonzero status");
             }
-            print("getting $tid\n");
-            $shm = shm_attach(ftok(__FILE__, "$tid"), self::SHM_SIZE, 0666);
-            $map = shm_get_var($shm, 0);
-            shm_detach($shm);
+            //print("getting $tid\n");
+            $map = shm_get_var($shms[$tid], 0);
+            shm_detach($shms[$tid]);
             foreach($map as $key=>$_) {
                 if (!isset($seenSlugs[$key])) {
                     $seenSlugs[$key] = true;
