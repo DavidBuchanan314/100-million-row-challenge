@@ -1,319 +1,162 @@
 <?php
 
-declare(strict_types=1);
-
 namespace App;
 
-use RuntimeException;
+use Exception;
+
+
 
 final class Parser
 {
-    private const URL_COUNT = 268;
-    private const TIMESTAMP_COUNT = 10000;
-    private const CHUNK_SIZE = 1024 * 64; // 64k chunks
-    private const MATRIX_SIZE = self::URL_COUNT * self::TIMESTAMP_COUNT;
     private const THREAD_COUNT = 8;
+    private const SHM_SIZE = 10000000;
+    private const READ_CHUNK_SZ = 0x10000;
+    private const NUM_DATES = 2232;
+
+    private function findSplitPoints(string $inputPath): array
+    {
+        $res = [0];
+        $size = filesize($inputPath);
+        $handle = fopen($inputPath, 'rb');
+        for ($i=1; $i<self::THREAD_COUNT; $i++) {
+            fseek($handle, (int)(($i*$size)/self::THREAD_COUNT));
+            fgets($handle); // read until newline
+            $res[] = ftell($handle);
+        }
+        fclose($handle);
+        $res[] = $size;
+        return $res;
+    }
+
+    private function parseRange(string $inputPath, int $start, int $end, array $datelutlut, int $tid): void
+    {
+        $map = [];
+        $file = fopen($inputPath, 'rb');
+        fseek($file, $start);
+        $block = '';
+        $len_remaining = $end - $start;
+        //$lines_read = 0;
+        for (;;) {
+            if ($len_remaining > 0) {
+                $newdata = fread($file, min($len_remaining, self::READ_CHUNK_SZ));
+            } else {
+                $newdata = '';
+            }
+            $readlen = strlen($newdata);
+            $len_remaining -= $readlen;
+            $block .= $newdata;
+            $blen = strlen($block) - 200; // 200 >= max line length, stop early to avoid starting to parse a line that straddles the boundary
+            if ($blen <= 0) {
+                $blen += 200; // we're on the last block, no early-stop needed
+                if ($blen == 0) break; // eof
+            };
+            $idx = 0;
+            while ($idx < $blen) { // this is the hot loop
+                $comma = strpos($block, ',', $idx + 25);
+                $path = substr($block, $idx + 25, ($comma - $idx) - 25);
+                //$date = ($block[$comma + 4]-1)*372 +
+                //        (substr($block, $comma + 6, 2)-1)*31 +
+                //        (substr($block, $comma + 9, 2)-1);
+                $date = $datelutlut[substr($block, $comma + 4, 7)];
+
+                //print($path.":".$date."\n");
+                if (!isset($map[$path])) {
+                    $map[$path] = array_fill(0, self::NUM_DATES, 0);
+                }
+                $map[$path][$date]++;
+                $idx = $comma + 27;
+                //$lines_read++;
+            }
+            $block = substr($block, $idx); // remainder
+            //print($lines_read."\n");
+        }
+        fclose($file);
+
+        print("done reading (thread $tid)\n");
+
+        $shm = shm_attach(ftok(__FILE__, "$tid"), self::SHM_SIZE, 0666);
+        shm_put_var($shm, 0, $map);
+        shm_detach($shm);
+        print("hello\n");
+        //return $map;
+    }
 
     public function parse(string $inputPath, string $outputPath): void
     {
-        print("hello\n");
+        $datelut = [];
+        for ($y = 1; $y <= 6; $y++) {
+            for ($mm = 1; $mm <= 12; $mm++) {
+                for ($dd = 1; $dd <= 31; $dd++) {
+                    $datelut[] = sprintf('%d-%02d-%02d', $y, $mm, $dd);
+                }
+            }
+        }
+        $datelutlut = array_flip($datelut);
 
-        $fileSize = filesize($inputPath);
+        print("done building date table\n");
 
-        // Calculate split points for 8 threads
-        $chunkSize = (int)($fileSize / self::THREAD_COUNT);
-        $splitPoints = $this->findSplitPoints($inputPath, $fileSize, $chunkSize);
+        $splitpoints = $this->findSplitPoints($inputPath);
 
-        print("splitting file into " . self::THREAD_COUNT . " segments\n");
-
-        // Create temporary files for IPC
-        $tmpFiles = [];
+        // spin up threads
         $pids = [];
-
-        // Fork child processes
-        for ($i = 0; $i < self::THREAD_COUNT; $i++) {
-            $start = $splitPoints[$i];
-            $end = ($i < self::THREAD_COUNT - 1) ? $splitPoints[$i + 1] : $fileSize;
-            $length = $end - $start;
-
-            $tmpFile = tempnam(sys_get_temp_dir(), 'parser' . $i . '_');
-            $tmpFiles[$i] = $tmpFile;
-
+        for ($i=0; $i<self::THREAD_COUNT; $i++) {
             $pid = pcntl_fork();
-
             if ($pid == -1) {
-                throw new RuntimeException("Could not fork process");
+                throw new \RuntimeException("Could not fork process");
             } elseif ($pid == 0) {
-                // Child process - Process file segment
-                $this->processFileSegment($inputPath, $start, $length, $tmpFile);
+                $this->parseRange($inputPath, $splitpoints[$i], $splitpoints[$i+1], $datelutlut, $i);
                 exit(0);
             }
-
-            $pids[$i] = $pid;
+            $pids[] = $pid;
         }
 
-        // Parent process - wait for all children
-        $allSuccess = true;
-        foreach ($pids as $pid) {
+        // join the threads, collect results
+        $maps = [];
+        $slugs = []; // all slugs, in first-seen order
+        $seenSlugs = [];
+        foreach ($pids as $tid=>$pid) {
             pcntl_waitpid($pid, $status);
             if ($status !== 0) {
-                $allSuccess = false;
+                throw new \RuntimeException("child exited with nonzero status");
             }
-        }
-
-        // Check if children exited successfully
-        if (!$allSuccess) {
-            foreach ($tmpFiles as $tmpFile) {
-                if (file_exists($tmpFile)) {
-                    unlink($tmpFile);
+            print("getting $tid\n");
+            $shm = shm_attach(ftok(__FILE__, "$tid"), self::SHM_SIZE, 0666);
+            $map = shm_get_var($shm, 0);
+            shm_detach($shm);
+            foreach($map as $key=>$_) {
+                if (!isset($seenSlugs[$key])) {
+                    $seenSlugs[$key] = true;
+                    $slugs[] = $key;
                 }
             }
-            throw new RuntimeException("Child processes failed");
+            $maps[] = $map;
         }
 
-        print("merging results from " . self::THREAD_COUNT . " threads...\n");
-
-        // Read results from all temporary files
-        $allResults = [];
-        foreach ($tmpFiles as $tmpFile) {
-            $allResults[] = unserialize(file_get_contents($tmpFile));
-            unlink($tmpFile);
-        }
-
-        // Merge all results
-        $this->mergeResults($allResults, $outputPath);
-
-        print("done writing\n");
-    }
-
-    private function findSplitPoints(string $inputPath, int $fileSize, int $chunkSize): array
-    {
-        $splitPoints = [0];
-        $handle = fopen($inputPath, 'rb');
-
-        if (!$handle) {
-            throw new RuntimeException("Cannot open file: {$inputPath}");
-        }
-
-        for ($i = 1; $i < self::THREAD_COUNT; $i++) {
-            $targetPos = $i * $chunkSize;
-            fseek($handle, $targetPos);
-
-            // Read until next newline to get a clean split
-            while (!feof($handle) && fgetc($handle) !== "\n") {}
-            $splitPoints[] = ftell($handle);
-        }
-
-        fclose($handle);
-        return $splitPoints;
-    }
-
-    private function processFileSegment(string $inputPath, int $start, int $length, string $outputFile): void
-    {
-        $matrix = array_fill(0, self::MATRIX_SIZE, 0);
-
-        $pathIndices = [];
-        $dateIndices = [];
-        $pathcIndices = [];
-        $datecIndices = [];
-        $nextPathIdx = 0;
-        $nextDateIdx = 0;
-
-        $handle = fopen($inputPath, 'rb');
-        if (!$handle) {
-            exit(1);
-        }
-
-        fseek($handle, $start);
-        $bytesRead = 0;
-        $buffer = '';
-        $remaining = '';
-
-        while ($bytesRead < $length) {
-            $chunkSize = min(self::CHUNK_SIZE, $length - $bytesRead);
-            $chunk = fread($handle, $chunkSize);
-
-            $bytesRead += $chunkSize;
-            $buffer = $remaining . $chunk;
-            $lastNewline = strrpos($buffer, "\n");
-
-            if ($lastNewline !== false) {
-                $lines = explode("\n", substr($buffer, 0, $lastNewline));
-                $remaining = substr($buffer, $lastNewline + 1);
-            } else {
-                $lines = [$buffer];
-                $remaining = '';
-            }
-
-            foreach ($lines as $line) {
-                if ($line === '') continue;
-
-                $commaPos = strpos($line, ',', 25);
-
-                $path = substr($line, 25, $commaPos - 25);
-                $pathc = crc32($path);
-                $date = substr($line, $commaPos + 1, 10);
-                $datec = crc32($date);
-
-                if (!isset($pathcIndices[$pathc])) {
-                    $pathIndices[$path] = $nextPathIdx;
-                    $pathcIndices[$pathc] = $nextPathIdx++;
-                }
-
-                if (!isset($datecIndices[$datec])) {
-                    $dateIndices[$date] = $nextDateIdx;
-                    $datecIndices[$datec] = $nextDateIdx++;
-                }
-
-                $offset = $pathcIndices[$pathc] * self::TIMESTAMP_COUNT + $datecIndices[$datec];
-                $matrix[$offset]++;
-            }
-        }
-
-        // Process remaining data
-        if ($remaining !== '') {
-            $commaPos = strpos($remaining, ',', 25);
-            $path = substr($remaining, 25, $commaPos - 25);
-            $pathc = crc32($path);
-            $date = substr($remaining, $commaPos + 1, 10);
-            $datec = crc32($date);
-
-            if (!isset($pathcIndices[$pathc])) {
-                $pathIndices[$path] = $nextPathIdx;
-                $pathcIndices[$pathc] = $nextPathIdx++;
-            }
-
-            if (!isset($datecIndices[$datec])) {
-                $dateIndices[$date] = $nextDateIdx;
-                $datecIndices[$datec] = $nextDateIdx++;
-            }
-
-            $offset = $pathcIndices[$pathc] * self::TIMESTAMP_COUNT + $datecIndices[$datec];
-            $matrix[$offset]++;
-        }
-
-        fclose($handle);
-
-        // Store results in temporary file
-        $results = [
-            $matrix,
-            $pathIndices,
-            $dateIndices,
-            $nextPathIdx,
-            $nextDateIdx
-        ];
-
-        print("thread completed, serializing\n");
-        file_put_contents($outputFile, serialize($results));
-    }
-
-    private function mergeResults(array $allResults, string $outputPath): void
-    {
-        // Start with first result as base
-        [$matrix, $pathIndices, $dateIndices, $nextPathIdx, $nextDateIdx] = $allResults[0];
-
-        // Merge remaining results
-        for ($i = 1; $i < count($allResults); $i++) {
-            [$matrix2, $pathIndices2, $dateIndices2, $nextPathIdx2, $nextDateIdx2] = $allResults[$i];
-
-            // Merge path indices
-            foreach ($pathIndices2 as $path => $idx) {
-                if (!isset($pathIndices[$path])) {
-                    $pathIndices[$path] = $nextPathIdx++;
-                }
-            }
-
-            // Merge date indices
-            foreach ($dateIndices2 as $date => $idx) {
-                if (!isset($dateIndices[$date])) {
-                    $dateIndices[$date] = $nextDateIdx++;
-                }
-            }
-
-            // Create remapping arrays
-            $pathRemap = [];
-            foreach ($pathIndices2 as $path => $oldIdx) {
-                $pathRemap[$oldIdx] = $pathIndices[$path];
-            }
-
-            $dateRemap = [];
-            foreach ($dateIndices2 as $date => $oldIdx) {
-                $dateRemap[$oldIdx] = $dateIndices[$date];
-            }
-
-            // Merge matrix with remapping
-            for ($oldPathIdx = 0; $oldPathIdx < $nextPathIdx2; $oldPathIdx++) {
-                $newPathIdx = $pathRemap[$oldPathIdx] ?? null;
-                if ($newPathIdx === null) continue;
-
-                $baseOffsetOld = $oldPathIdx * self::TIMESTAMP_COUNT;
-                $baseOffsetNew = $newPathIdx * self::TIMESTAMP_COUNT;
-
-                for ($oldDateIdx = 0; $oldDateIdx < $nextDateIdx2; $oldDateIdx++) {
-                    $newDateIdx = $dateRemap[$oldDateIdx] ?? null;
-                    if ($newDateIdx === null) continue;
-
-                    $val = $matrix2[$baseOffsetOld + $oldDateIdx];
-                    if ($val > 0) {
-                        $matrix[$baseOffsetNew + $newDateIdx] += $val;
-                    }
-                }
-            }
-        }
-
-        print("done reading\n");
-
-        // Sort dates
-        $sortedDates = array_keys($dateIndices);
-        sort($sortedDates, SORT_STRING);
-
-        // Create path lookup with escaped slashes
-        $pathLookup = array_keys($pathIndices);
-
-        // Write output
         $outHandle = fopen($outputPath, 'wb');
-        if (!$outHandle) {
-            throw new RuntimeException("Cannot open output file: {$outputPath}");
-        }
-
-        try {
-            fwrite($outHandle, "{\n");
-
-            $firstPath = true;
-
-            for ($pathIdx = 0; $pathIdx < $nextPathIdx; $pathIdx++) {
-                $path = $pathLookup[$pathIdx] ?? null;
-                if ($path === null) continue;
-
-                $dateEntries = [];
-                $baseOffset = $pathIdx * self::TIMESTAMP_COUNT;
-
-                foreach ($sortedDates as $date) {
-                    $dateIdx = $dateIndices[$date];
-                    $count = $matrix[$baseOffset + $dateIdx];
-
-                    if ($count > 0) {
-                        $dateEntries[] = '        "' . $date . '": ' . $count;
+        fwrite($outHandle, "{\n");
+        $zeroes = array_fill(0, self::NUM_DATES, 0);
+        foreach ($slugs as $slug) {
+            $counts = $maps[0][$slug] ?? array_fill(0, self::NUM_DATES, 0);
+            for ($i=1; $i<self::THREAD_COUNT; $i++) {
+                if (isset($maps[$i][$slug])) {
+                    $tmp = $maps[$i][$slug];
+                    for ($j=0; $j<self::NUM_DATES; $j++) {
+                        $counts[$j] += $tmp[$j];
                     }
                 }
-
-                if (empty($dateEntries)) {
-                    continue;
-                }
-
-                if ($firstPath) {
-                    fwrite($outHandle, '    "\\/blog\\/' . $path . '": {' . "\n");
-                    $firstPath = false;
-                } else {
-                    fwrite($outHandle, ",\n    \"\\/blog\\/" . $path . '": {' . "\n");
-                }
-
-                fwrite($outHandle, implode(",\n", $dateEntries) . "\n    }");
             }
-
-            fwrite($outHandle, "\n}");
-        } finally {
-            fclose($outHandle);
+            $datefmt = [];
+            for ($i=0; $i<self::NUM_DATES; $i++) {
+                $count = $counts[$i];
+                if ($count > 0) {
+                    $datefmt[] = $datelut[$i].'": '.$count;
+                }
+            }
+            $joined = implode(",\n        \"202", $datefmt);
+            fwrite($outHandle, "    \"\\/blog\\/$slug\": {\n        \"202$joined\n    },\n");
         }
+        fseek($outHandle, -2, SEEK_CUR); // unwind last comma+newline
+        fwrite($outHandle, "\n}");
+        fclose($outHandle);
     }
 }
