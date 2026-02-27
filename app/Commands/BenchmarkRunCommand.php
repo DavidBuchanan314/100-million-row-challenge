@@ -308,7 +308,7 @@ final class BenchmarkRunCommand
             return null;
         }
 
-        if ($meanTime < 10) {
+        if ($meanTime < 20) {
             // Second run for fast PRs
             $command = sprintf(
                 "hyperfine --warmup 2 --runs 5 --export-json %s 'cd %s && %s'",
