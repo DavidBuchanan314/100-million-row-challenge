@@ -18,14 +18,14 @@ final class Parser
             $block = fread($file, 0x10000).fgets($file);
             $blen = strlen($block);
             if ($blen == 0) break; // eof
-            $idx = 0;
+            $idx = 25;
             while ($idx < $blen) {
-                $comma = strpos($block, ',', $idx + 25);
-                $path = substr($block, $idx + 25, ($comma - $idx) - 25);
+                $comma = strpos($block, ',', $idx);
+                $path = substr($block, $idx, $comma - $idx);
                 $date = $datelutlut[substr($block, $comma + 4, 7)];
                 if (!isset($map[$path])) $map[$path] = array_fill(0, 2232, 0);
                 $map[$path][$date]++;
-                $idx = $comma + 27;
+                $idx = $comma + 52;
             }
         }
         $out = fopen($outputPath, 'wb');
