@@ -14,7 +14,7 @@ final class Parser
         $datelutlut = array_flip($datelut);
         $map = [];
         $file = fopen($inputPath, 'r');
-        for (;;) {
+        while (count($map) < 268) {
             $block = fread($file, 0x10000).fgets($file);
             $blen = strlen($block);
             if ($blen == 0) break; // eof
@@ -23,10 +23,7 @@ final class Parser
                 $comma = strpos($block, ',', $idx);
                 $path = substr($block, $idx, $comma - $idx);
                 $date = $datelutlut[substr($block, $comma + 4, 7)];
-                if (!isset($map[$path])) {
-                    $map[$path] = array_fill(0, 2232, 0);
-                    if (count($map) >= 268) break 2;
-                }
+                if (!isset($map[$path])) $map[$path] = array_fill(0, 2232, 0);
                 $map[$path][$date]++;
                 $idx = $comma + 52;
             }
